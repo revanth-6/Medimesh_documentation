@@ -1379,3 +1379,348 @@ git push origin main
 ---
 
 
+---
+
+## 16. GitHub Actions CD Setup
+
+### CD Flow (GitOps)
+
+```text id="cd1"
+CI Success + Approval
+        ↓
+Update manifest_repo (values.yaml)
+        ↓
+ArgoCD detects change
+        ↓
+Applies Helm update
+        ↓
+Argo Rollouts (Blue/Green)
+```
+
+---
+
+### 16.1 Verify Manifest Update
+
+```bash id="cd2"
+cd manifest_repo
+git pull origin main
+
+git log --oneline -5
+
+cat helm/auth/values.yaml | grep tag
+```
+
+---
+
+### 16.2 Verify ArgoCD Sync
+
+```bash id="cd3"
+argocd app get medimesh-auth
+
+argocd app sync medimesh-auth
+```
+
+---
+
+### 16.3 Complete Deployment
+
+```bash id="cd4"
+kubectl get pods -n medimesh-backend
+
+kubectl argo rollouts get rollout medimesh-auth \
+  -n medimesh-backend
+
+kubectl port-forward svc/medimesh-auth-svc-preview \
+  -n medimesh-backend 5001:5001 &
+
+curl http://localhost:5001/health
+
+kubectl argo rollouts promote medimesh-auth \
+  -n medimesh-backend
+```
+
+---
+
+### 16.4 Git Retry Logic
+
+```bash id="cd5"
+for i in 1 2 3 4 5; do
+  git push && break
+  git pull --rebase origin main
+  sleep $((i * 2))
+done
+```
+
+---
+
+## 17. OIDC Setup for Vitals
+
+### Why OIDC?
+
+No static credentials.
+Short-lived secure authentication.
+
+---
+
+### OIDC Flow
+
+```text id="oidc1"
+GitHub → OIDC Token → K8s API → RBAC → Deploy → Token expires
+```
+
+---
+
+### 17.1 Configure API Server
+
+Edit:
+
+```bash id="oidc2"
+/etc/kubernetes/manifests/kube-apiserver.yaml
+```
+
+Add:
+
+```text id="oidc3"
+--oidc-issuer-url=https://token.actions.githubusercontent.com
+--oidc-client-id=kubernetes
+--oidc-username-claim=sub
+--oidc-username-prefix=github:
+--oidc-groups-claim=repository
+```
+
+---
+
+### 17.2 Apply RBAC
+
+```bash id="oidc4"
+kubectl apply -f manifest_repo/rbac/github-actions-vitals-rbac.yaml
+```
+
+---
+
+### 17.3 Get CA Cert
+
+```bash id="oidc5"
+kubectl config view --raw --minify \
+  --output 'jsonpath={.clusters[0].cluster.certificate-authority-data}'
+```
+
+---
+
+### 17.4 Get API Server
+
+```bash id="oidc6"
+kubectl config view --minify \
+  --output 'jsonpath={.clusters[0].cluster.server}'
+```
+
+---
+
+### 17.5 Self-Hosted Runner
+
+```bash id="oidc7"
+mkdir actions-runner && cd actions-runner
+
+curl -o runner.tar.gz -L <runner-url>
+tar xzf runner.tar.gz
+
+./config.sh --url <repo-url> --token <token>
+
+sudo ./svc.sh install
+sudo ./svc.sh start
+```
+
+---
+
+### 17.6 Repo Secrets
+
+```text id="oidc8"
+K8S_CA_CERT
+K8S_API_SERVER
+```
+
+---
+
+### 17.7 Promote Vitals
+
+```bash id="oidc9"
+kubectl argo rollouts get rollout medimesh-vitals \
+  -n medimesh-backend
+
+kubectl argo rollouts promote medimesh-vitals \
+  -n medimesh-backend
+```
+
+---
+
+## 18. Full Pipeline Verification
+
+### 18.1 End-to-End Test
+
+```bash id="verify1"
+git commit -m "feat: test pipeline"
+git push origin main
+```
+
+Then verify:
+
+* GitHub Actions
+* SonarQube
+* Docker Hub
+* ArgoCD
+* Rollouts
+
+---
+
+### 18.2 Health Checks
+
+```bash id="verify2"
+kubectl get pods -n medimesh-frontend
+kubectl get pods -n medimesh-backend
+kubectl get pods -n medimesh-db
+```
+
+---
+
+### Gateway Testing
+
+```bash id="verify3"
+curl http://<gateway-ip>/auth/health
+curl http://<gateway-ip>/
+```
+
+---
+
+### 18.3 Monitoring
+
+```bash id="verify4"
+kubectl get pods -n monitoring
+
+kubectl port-forward svc/prometheus-grafana \
+  -n monitoring 3000:80 &
+```
+
+---
+
+### 18.4 Full System Status
+
+```bash id="verify5"
+kubectl get nodes
+kubectl get pods --all-namespaces
+kubectl get pvc -n medimesh-db
+kubectl get hpa -n medimesh-frontend
+kubectl get networkpolicy --all-namespaces
+```
+
+---
+
+## 19. Troubleshooting Reference
+
+### 19.1 CrashLoopBackOff
+
+```bash id="tr1"
+kubectl describe pod <pod>
+kubectl logs <pod>
+kubectl logs <pod> --previous
+```
+
+---
+
+### 19.2 PVC Pending
+
+```bash id="tr2"
+kubectl get pvc
+kubectl describe pvc <pvc>
+kubectl get sc
+```
+
+---
+
+### 19.3 ArgoCD Issues
+
+```bash id="tr3"
+argocd app get medimesh-auth
+argocd app sync medimesh-auth
+```
+
+---
+
+### 19.4 CI Failures
+
+Check:
+
+* GitHub Actions logs
+* Secrets configuration
+* Tokens
+
+---
+
+### 19.5 Sealed Secrets Issues
+
+```bash id="tr4"
+kubectl get pods -n kube-system | grep sealed-secrets
+kubectl logs -n kube-system -l app.kubernetes.io/name=sealed-secrets
+```
+
+---
+
+### 19.6 Rollout Stuck
+
+```bash id="tr5"
+kubectl argo rollouts get rollout medimesh-auth \
+  -n medimesh-backend
+
+kubectl argo rollouts promote medimesh-auth
+```
+
+---
+
+### 19.7 Network Issues
+
+```bash id="tr6"
+kubectl exec -it <pod> -- sh
+
+nslookup service-name
+wget -qO- http://service:port/health
+```
+
+---
+
+### 19.8 SonarQube Issues
+
+```bash id="tr7"
+sudo systemctl status sonarqube
+curl http://<ip>:9000/api/system/status
+```
+
+---
+
+## ✅ Summary
+
+```text id="summary1"
+Infrastructure        → Kubernetes Cluster
+Storage              → NFS + PVC
+Deployment           → Helm + ArgoCD
+Strategy             → Blue/Green (Argo Rollouts)
+CI/CD                → GitHub Actions (8 stages)
+Security             → SonarQube + Snyk + Trivy
+Monitoring           → Prometheus + Grafana
+Secrets              → Sealed Secrets
+Advanced Deploy      → OIDC (Vitals)
+```
+
+---
+
+### Final Stats
+
+```text id="summary2"
+Microservices:        11
+CI Stages:            8
+Security Layers:      3
+Namespaces:           3
+Deployment Types:     Blue/Green + Rolling
+Monitoring:           Enabled
+```
+
+
+

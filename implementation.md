@@ -37,10 +37,7 @@
 
 ### Overview
 
-MediMesh runs on a self-managed Kubernetes cluster built
-using `kubeadm`. The cluster has one master (control plane)
-node and two worker nodes. A separate NFS server provides
-persistent storage for MongoDB.
+MediMesh runs on a self-managed Kubernetes cluster built using `kubeadm`. The cluster has one master (control plane) node and two worker nodes. A separate NFS server provides persistent storage for MongoDB.
 
 ### 1.1 VM Requirements
 
@@ -63,10 +60,8 @@ persistent storage for MongoDB.
 
 ### Why this is needed
 
-Kubernetes requires specific kernel modules, network settings,
-and a container runtime before the cluster can be formed.
-Swap must be disabled because Kubernetes memory management
-conflicts with Linux swap behavior.
+Kubernetes requires specific kernel modules, network settings, and a container runtime before the cluster can be formed.
+Swap must be disabled because Kubernetes memory management conflicts with Linux swap behavior.
 
 ---
 
@@ -80,6 +75,10 @@ sudo apt-get upgrade -y
 ---
 
 ### 2.2 Disable Swap
+
+Kubernetes requires swap to be disabled.
+If swap is active, kubelet will refuse to start.
+
 
 ```bash
 # Disable swap immediately
@@ -99,8 +98,8 @@ free -h
 
 These modules are needed for container networking.
 
-* overlay — used by containerd for layered filesystems
-* br_netfilter — allows iptables to see bridged traffic
+* `overlay` — used by containerd for layered filesystems
+* `br_netfilter` — allows iptables to see bridged traffic
 
 ```bash
 sudo tee /etc/modules-load.d/containerd.conf <<EOF
@@ -108,9 +107,11 @@ overlay
 br_netfilter
 EOF
 
+# Load modules immediately (no reboot needed)
 sudo modprobe overlay
 sudo modprobe br_netfilter
 
+# Verify modules are loaded
 lsmod | grep overlay
 lsmod | grep br_netfilter
 ```
@@ -119,6 +120,7 @@ lsmod | grep br_netfilter
 
 ### 2.4 Set Kernel Parameters
 
+These settings allow Kubernetes networking (iptables) to ee and manage bridge network traffic between pods.
 ```bash
 sudo tee /etc/sysctl.d/kubernetes.conf <<EOF
 net.bridge.bridge-nf-call-ip6tables = 1
@@ -126,16 +128,21 @@ net.bridge.bridge-nf-call-iptables  = 1
 net.ipv4.ip_forward                 = 1
 EOF
 
+# Apply settings immediately
 sudo sysctl --system
 
+# Verify
 sysctl net.ipv4.ip_forward
+# Should output: net.ipv4.ip_forward = 1
 ```
 
 ---
 
 ### 2.5 Install Container Runtime (containerd)
 
+`containerd` is the industry-standard container runtime used by Kubernetes. It replaced Docker as the default runtime in Kubernetes 1.24+.
 ```bash
+# Install required packages
 sudo apt-get install -y \
   curl \
   gnupg2 \
@@ -143,10 +150,12 @@ sudo apt-get install -y \
   apt-transport-https \
   ca-certificates
 
+# Add Docker GPG key (containerd is in Docker's repo)
 sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
   | sudo gpg --dearmor \
   -o /etc/apt/keyrings/docker.gpg
 
+# Add Docker repository
 echo \
   "deb [arch=$(dpkg --print-architecture) \
   signed-by=/etc/apt/keyrings/docker.gpg] \
@@ -155,38 +164,58 @@ echo \
   | sudo tee /etc/apt/sources.list.d/docker.list
 
 sudo apt-get update -y
+# Install containerd
 sudo apt-get install -y containerd.io
 
+# Generate default configuration
 containerd config default \
   | sudo tee /etc/containerd/config.toml >/dev/null 2>&1
 
+# Enable SystemdCgroup (required for Kubernetes)
 sudo sed -i \
   's/SystemdCgroup = false/SystemdCgroup = true/' \
   /etc/containerd/config.toml
 
+# Restart and enable containerd
 sudo systemctl restart containerd
 sudo systemctl enable containerd
+
+# Verify containerd is running
+sudo systemctl status containerd
 ```
 
 ---
 
 ### 2.6 Install Kubernetes Components
 
+* `kubelet` — runs on every node, manages pods
+* `kubeadm` — bootstraps the cluster
+* `kubectl` — CLI to interact with the cluster
+
 ```bash
+# Add Kubernetes GPG key
 curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key \
   | sudo gpg --dearmor \
   -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
 
+# Add Kubernetes repository
 echo \
   'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] \
   https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /' \
   | sudo tee /etc/apt/sources.list.d/kubernetes.list
 
 sudo apt-get update -y
+
+# Install and pin version to avoid accidental upgrades
 sudo apt-get install -y kubelet kubeadm kubectl
 sudo apt-mark hold kubelet kubeadm kubectl
 
+# Enable kubelet
 sudo systemctl enable kubelet
+
+# Verify
+kubectl version --client
+kubeadm version
 ```
 
 ---

@@ -446,3 +446,292 @@ docker push bharath44623/medimesh_medimesh-auth:v1.0.0
 
 ---
 
+---
+
+## 7. Kubernetes Namespaces & Helm Charts
+
+### Why Helm?
+
+Helm is the package manager for Kubernetes.
+Instead of managing dozens of YAML files, Helm uses templates with values.
+
+---
+
+### Why 3 Namespaces?
+
+```text
+medimesh-frontend  → React UI
+medimesh-backend   → All microservices
+medimesh-db        → MongoDB + storage
+```
+
+---
+
+### 7.1 Install Helm
+
+```bash id="helm1"
+curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+helm version
+```
+
+---
+
+### 7.2 Repository Structure
+
+```text
+manifest_repo/
+└── helm/
+    ├── infrastructure/
+    ├── auth/
+    ├── user/
+    ├── doctor/
+    ├── appointment/
+    ├── vitals/
+    ├── pharmacy/
+    ├── ambulance/
+    ├── complaint/
+    ├── forum/
+    ├── bff/
+    ├── frontend/
+    ├── mongo/
+    └── nfs/
+```
+
+---
+
+### 7.3 Key Design Decisions
+
+#### Init Containers
+
+Wait for MongoDB before starting app:
+
+```bash id="init1"
+nc -z <mongodb-host> 27017
+```
+
+---
+
+#### Health Probes
+
+* Readiness → receives traffic only when ready
+* Liveness → restarts if unhealthy
+
+---
+
+#### Resource Limits
+
+Prevents resource exhaustion per pod.
+
+---
+
+#### Sealed Secrets
+
+Encrypted secrets stored safely in Git.
+
+---
+
+### 7.4 Network Policies (Zero Trust)
+
+```text
+Default → DENY ALL
+
+Allowed:
+✔ External → Frontend
+✔ Frontend → BFF
+✔ BFF → Backend
+✔ Backend → MongoDB
+✔ MongoDB → MongoDB
+✔ All → DNS
+
+Blocked:
+✘ External → Backend
+✘ External → MongoDB
+✘ Frontend → MongoDB
+```
+
+---
+
+### 7.5 Validate Helm Charts
+
+```bash id="helm2"
+helm lint helm/auth
+helm template medimesh-auth helm/auth --debug
+
+helm template medimesh-infrastructure helm/infrastructure | grep "kind:"
+```
+
+---
+
+## 8. Sealed Secrets Setup
+
+### Why Sealed Secrets?
+
+Kubernetes Secrets are only base64 encoded (NOT secure).
+Sealed Secrets encrypt them safely for Git storage.
+
+---
+
+### Flow
+
+```text
+Secret → kubeseal → SealedSecret → ArgoCD → Cluster Secret
+```
+
+---
+
+### 8.1 Install Controller
+
+```bash id="seal1"
+kubectl apply -f https://github.com/bitnami-labs/sealed-secrets/releases/download/v0.24.0/controller.yaml
+
+kubectl rollout status deployment sealed-secrets-controller -n kube-system
+kubectl get pods -n kube-system | grep sealed-secrets
+```
+
+---
+
+### 8.2 Install kubeseal CLI
+
+```bash id="seal2"
+wget https://github.com/bitnami-labs/sealed-secrets/releases/download/v0.24.0/kubeseal-0.24.0-linux-amd64.tar.gz
+
+tar -xvzf kubeseal-0.24.0-linux-amd64.tar.gz kubeseal
+sudo install -m 755 kubeseal /usr/local/bin/kubeseal
+
+kubeseal --version
+```
+
+---
+
+### 8.3 Create Application Secret
+
+```bash id="seal3"
+kubectl create secret generic medimesh-secrets \
+  --from-literal=JWT_SECRET="your-secret" \
+  --from-literal=ADMIN_USERNAME="admin" \
+  --from-literal=ADMIN_PASSWORD="password" \
+  --from-literal=MONGO_INITDB_ROOT_USERNAME="mongoroot" \
+  --from-literal=MONGO_INITDB_ROOT_PASSWORD="password" \
+  --namespace medimesh-backend \
+  --dry-run=client -o yaml > medimesh-secrets.yaml
+
+kubeseal \
+  --controller-name=sealed-secrets-controller \
+  --controller-namespace=kube-system \
+  --format yaml \
+  < medimesh-secrets.yaml \
+  > medimesh-secrets-sealed.yaml
+
+kubectl apply -f medimesh-secrets-sealed.yaml
+
+kubectl get secret medimesh-secrets -n medimesh-backend
+
+rm medimesh-secrets.yaml
+```
+
+---
+
+### 8.4 MongoDB Secret
+
+```bash id="seal4"
+kubectl create secret generic medimesh-mongo-secret \
+  --from-literal=MONGO_INITDB_ROOT_USERNAME="mongoroot" \
+  --from-literal=MONGO_INITDB_ROOT_PASSWORD="password" \
+  --namespace medimesh-db \
+  --dry-run=client -o yaml > mongo-secret.yaml
+
+kubeseal \
+  --controller-name=sealed-secrets-controller \
+  --controller-namespace=kube-system \
+  --format yaml \
+  < mongo-secret.yaml \
+  > medimesh-mongo-secret-sealed.yaml
+
+kubectl apply -f medimesh-mongo-secret-sealed.yaml
+
+kubectl get secret medimesh-mongo-secret -n medimesh-db
+```
+
+---
+
+## 9. Argo Rollouts Setup
+
+### Why Argo Rollouts?
+
+Adds advanced deployment strategies:
+
+* Blue/Green
+* Canary
+
+---
+
+### Blue/Green Flow
+
+```text
+Blue → current version
+Green → new version (no traffic)
+
+Test Green → Promote → Switch traffic
+Abort → rollback instantly
+```
+
+---
+
+### 9.1 Install Argo Rollouts
+
+```bash id="roll1"
+kubectl create namespace argo-rollouts
+
+kubectl apply -n argo-rollouts \
+  -f https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml
+
+kubectl rollout status deployment argo-rollouts -n argo-rollouts
+
+kubectl get pods -n argo-rollouts
+```
+
+---
+
+### 9.2 Install kubectl Plugin
+
+```bash id="roll2"
+curl -LO https://github.com/argoproj/argo-rollouts/releases/latest/download/kubectl-argo-rollouts-linux-amd64
+
+sudo install -o root -g root -m 0755 \
+  kubectl-argo-rollouts-linux-amd64 \
+  /usr/local/bin/kubectl-argo-rollouts
+
+kubectl argo rollouts version
+```
+
+---
+
+### 9.3 Dashboard
+
+```bash id="roll3"
+kubectl argo rollouts dashboard &
+```
+
+Access: http://localhost:3100
+
+---
+
+### 9.4 Manage Rollouts
+
+```bash id="roll4"
+kubectl argo rollouts list rollouts -n medimesh-backend
+
+kubectl argo rollouts get rollout medimesh-auth -n medimesh-backend
+
+kubectl argo rollouts promote medimesh-auth -n medimesh-backend
+
+kubectl argo rollouts abort medimesh-auth -n medimesh-backend
+
+kubectl argo rollouts retry rollout medimesh-auth -n medimesh-backend
+
+kubectl argo rollouts restart medimesh-auth -n medimesh-backend
+```
+
+---
+

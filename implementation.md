@@ -735,3 +735,294 @@ kubectl argo rollouts restart medimesh-auth -n medimesh-backend
 
 ---
 
+---
+
+## 10. ArgoCD Setup
+
+### Why ArgoCD?
+
+ArgoCD implements GitOps.
+
+Git = single source of truth
+Cluster state always matches Git
+
+---
+
+### GitOps Flow
+
+```text id="gitops1"
+CI updates manifest_repo
+        ↓
+ArgoCD detects change
+        ↓
+Applies Helm chart
+        ↓
+Cluster updated automatically
+```
+
+---
+
+### 10.1 Install ArgoCD
+
+```bash id="argo1"
+kubectl create namespace argocd
+
+kubectl apply -n argocd \
+  -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+kubectl wait --for=condition=Ready pods \
+  --all -n argocd \
+  --timeout=300s
+
+kubectl get pods -n argocd
+```
+
+---
+
+### 10.2 Access UI
+
+```bash id="argo2"
+kubectl port-forward svc/argocd-server \
+  -n argocd 8080:443 &
+```
+
+Access: https://localhost:8080
+
+---
+
+### 10.3 Get Admin Password
+
+```bash id="argo3"
+kubectl -n argocd get secret argocd-initial-admin-secret \
+  -o jsonpath="{.data.password}" | base64 -d && echo
+```
+
+---
+
+### 10.4 Install CLI
+
+```bash id="argo4"
+curl -sSL -o argocd-linux-amd64 \
+  https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+
+sudo install -m 555 argocd-linux-amd64 /usr/local/bin/argocd
+```
+
+Login:
+
+```bash id="argo5"
+argocd login localhost:8080 \
+  --username admin \
+  --password <password> \
+  --insecure
+```
+
+---
+
+### 10.5 Add Repo
+
+```bash id="argo6"
+argocd repo add https://github.com/Medimesh-grp3/manifest_repo \
+  --username <username> \
+  --password <pat>
+```
+
+---
+
+### 10.6 Create Applications
+
+```bash id="argo7"
+argocd app create medimesh-infrastructure \
+  --repo https://github.com/Medimesh-grp3/manifest_repo \
+  --path helm/infrastructure \
+  --dest-server https://kubernetes.default.svc \
+  --dest-namespace medimesh-backend \
+  --sync-policy automated \
+  --auto-prune \
+  --self-heal
+```
+
+---
+
+### Backend Services Loop
+
+```bash id="argo8"
+for service in auth user doctor appointment vitals \
+               pharmacy ambulance complaint forum bff; do
+  argocd app create medimesh-${service} \
+    --repo https://github.com/Medimesh-grp3/manifest_repo \
+    --path helm/${service} \
+    --dest-server https://kubernetes.default.svc \
+    --dest-namespace medimesh-backend \
+    --sync-policy automated \
+    --auto-prune \
+    --self-heal
+done
+```
+
+---
+
+### 10.7 Verify
+
+```bash id="argo9"
+argocd app list
+argocd app get medimesh-auth
+argocd app sync medimesh-auth
+```
+
+---
+
+## 11. kGateway Setup
+
+### Why kGateway?
+
+Single entry point using Gateway API.
+
+---
+
+### Routing
+
+```text id="gw1"
+ /auth        → auth service
+ /user        → user service
+ /doctor      → doctor service
+ /api         → BFF
+ /            → frontend
+```
+
+---
+
+### 11.1 Install Gateway CRDs
+
+```bash id="gw2"
+kubectl apply -f \
+  https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.0.0/standard-install.yaml
+
+kubectl get crd | grep gateway
+```
+
+---
+
+### 11.2 Install kGateway
+
+```bash id="gw3"
+helm repo add kgateway-dev https://kgateway-dev.github.io/kgateway/
+helm repo update
+
+helm install kgateway kgateway-dev/kgateway \
+  --namespace kgateway-system \
+  --create-namespace \
+  --version 2.0.0
+```
+
+---
+
+### 11.3 Verify Gateway
+
+```bash id="gw4"
+kubectl get gateway -n medimesh-frontend
+kubectl get httproute -n medimesh-frontend
+```
+
+---
+
+## 12. Helm Deployment
+
+### Deployment Order
+
+```text id="order1"
+1. NFS
+2. MongoDB
+3. Infrastructure
+4. Backend
+5. Frontend
+```
+
+---
+
+### 12.1 NFS
+
+```bash id="helm3"
+helm install medimesh-nfs helm/nfs \
+  -n medimesh-db \
+  --create-namespace
+
+kubectl get sc
+```
+
+---
+
+### 12.2 MongoDB
+
+```bash id="helm4"
+helm install medimesh-mongo helm/mongo \
+  -n medimesh-db
+
+kubectl get pods -n medimesh-db -w
+kubectl get pvc -n medimesh-db
+```
+
+---
+
+### 12.3 Infrastructure
+
+```bash id="helm5"
+helm install medimesh-infrastructure helm/infrastructure \
+  -n medimesh-backend \
+  --create-namespace
+
+kubectl get ns
+kubectl get networkpolicy -n medimesh-backend
+kubectl get secret medimesh-secrets -n medimesh-backend
+```
+
+---
+
+### 12.4 Backend Services
+
+```bash id="helm6"
+for service in auth user doctor appointment vitals \
+               pharmacy ambulance complaint forum bff; do
+  helm install medimesh-${service} helm/${service} \
+    -n medimesh-backend
+done
+
+kubectl get pods -n medimesh-backend -w
+```
+
+---
+
+### 12.5 Frontend
+
+```bash id="helm7"
+helm install medimesh-frontend helm/frontend \
+  -n medimesh-frontend
+
+kubectl get pods -n medimesh-frontend
+kubectl get svc -n medimesh-frontend
+kubectl get gateway -n medimesh-frontend
+```
+
+---
+
+### 12.6 Verification
+
+```bash id="helm8"
+kubectl get pods -n medimesh-frontend
+kubectl get pods -n medimesh-backend
+kubectl get pods -n medimesh-db
+kubectl get pvc -n medimesh-db
+```
+
+---
+
+### 12.7 Helm Upgrade
+
+```bash id="helm9"
+helm upgrade medimesh-auth helm/auth -n medimesh-backend
+helm history medimesh-auth -n medimesh-backend
+helm rollback medimesh-auth 1 -n medimesh-backend
+```
+
+---
+

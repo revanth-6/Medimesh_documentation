@@ -1026,3 +1026,356 @@ helm rollback medimesh-auth 1 -n medimesh-backend
 
 ---
 
+
+---
+
+## 13. Prometheus & Grafana Setup
+
+### Why Prometheus + Grafana?
+
+* Prometheus → collects metrics
+* Grafana → visualizes metrics
+
+---
+
+### 13.1 Add Helm Repo
+
+```bash id="mon1"
+helm repo add prometheus-community \
+  https://prometheus-community.github.io/helm-charts
+
+helm repo update
+```
+
+---
+
+### 13.2 Install Monitoring Stack
+
+```bash id="mon2"
+kubectl create namespace monitoring
+
+helm install prometheus \
+  prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --set prometheus.prometheusSpec.retention=7d \
+  --set grafana.adminPassword=admin123 \
+  --set grafana.service.type=NodePort \
+  --set prometheus.service.type=NodePort
+
+kubectl rollout status deployment prometheus-grafana -n monitoring
+
+kubectl get pods -n monitoring
+```
+
+---
+
+### 13.3 Access Grafana
+
+```bash id="mon3"
+kubectl port-forward svc/prometheus-grafana \
+  -n monitoring 3000:80 &
+```
+
+Access: http://localhost:3000
+Login: admin / admin123
+
+---
+
+### 13.4 Access Prometheus
+
+```bash id="mon4"
+kubectl port-forward \
+  svc/prometheus-kube-prometheus-prometheus \
+  -n monitoring 9090:9090 &
+```
+
+Access: http://localhost:9090
+
+---
+
+### 13.5 ServiceMonitor
+
+```bash id="mon5"
+cat > servicemonitor.yaml << 'EOF'
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: medimesh-backend-monitor
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  namespaceSelector:
+    matchNames:
+      - medimesh-backend
+  selector:
+    matchLabels:
+      tier: backend
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+EOF
+
+kubectl apply -f servicemonitor.yaml
+```
+
+---
+
+### 13.6 Grafana Dashboards
+
+```text id="mon6"
+1860  → Node Exporter
+6417  → Cluster Overview
+13770 → Full Monitoring
+15661 → Argo Rollouts
+```
+
+---
+
+### 13.7 Prometheus Queries
+
+```bash id="mon7"
+rate(container_cpu_usage_seconds_total{namespace="medimesh-backend"}[5m])
+
+container_memory_usage_bytes{namespace="medimesh-backend"}
+
+kube_pod_container_status_restarts_total{namespace="medimesh-backend"}
+```
+
+---
+
+## 14. SonarQube Setup
+
+### Why SonarQube?
+
+Static Application Security Testing (SAST)
+
+Detects:
+
+* Bugs
+* Code smells
+* Security issues
+
+---
+
+### 14.1 PostgreSQL Setup
+
+```bash id="sonar1"
+sudo apt update
+sudo apt install -y postgresql postgresql-contrib
+
+sudo systemctl start postgresql
+sudo systemctl enable postgresql
+```
+
+Create DB:
+
+```bash id="sonar2"
+sudo -u postgres psql << EOF
+CREATE USER sonar WITH ENCRYPTED PASSWORD 'sonarpassword';
+CREATE DATABASE sonarqube OWNER sonar;
+GRANT ALL PRIVILEGES ON DATABASE sonarqube TO sonar;
+\q
+EOF
+```
+
+---
+
+### 14.2 Install Java
+
+```bash id="sonar3"
+sudo apt install -y openjdk-17-jdk
+java -version
+```
+
+---
+
+### 14.3 Install SonarQube
+
+```bash id="sonar4"
+wget https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-10.3.0.82913.zip
+
+sudo apt install -y unzip
+unzip sonarqube-10.3.0.82913.zip
+sudo mv sonarqube-10.3.0.82913 /opt/sonarqube
+
+sudo useradd -r -s /bin/false sonar
+sudo chown -R sonar:sonar /opt/sonarqube
+```
+
+---
+
+### 14.4 Configure SonarQube
+
+```bash id="sonar5"
+sudo tee /opt/sonarqube/conf/sonar.properties << EOF
+sonar.jdbc.username=sonar
+sonar.jdbc.password=sonarpassword
+sonar.jdbc.url=jdbc:postgresql://localhost/sonarqube
+sonar.web.host=0.0.0.0
+sonar.web.port=9000
+EOF
+```
+
+---
+
+### 14.5 Systemd Service
+
+```bash id="sonar6"
+sudo tee /etc/systemd/system/sonarqube.service << EOF
+[Unit]
+Description=SonarQube service
+After=network.target
+
+[Service]
+Type=forking
+ExecStart=/opt/sonarqube/bin/linux-x86-64/sonar.sh start
+ExecStop=/opt/sonarqube/bin/linux-x86-64/sonar.sh stop
+User=sonar
+Group=sonar
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl start sonarqube
+sudo systemctl enable sonarqube
+```
+
+---
+
+### 14.6 Initial Setup
+
+Access: http://<ip>:9000
+
+* Login: admin / admin
+* Create projects
+* Generate token
+
+Save:
+
+```text id="sonar7"
+SONARQUBE_TOKEN
+SONARQUBE_URL
+```
+
+---
+
+## 15. GitHub Actions CI Setup
+
+### CI Flow
+
+```text id="ci1"
+Push → SonarQube → Build → Snyk → Docker → Trivy → Push → Approval → CD
+```
+
+---
+
+### Email Notifications
+
+Sent using SMTP via GitHub Actions:
+
+* Failure
+* Approval required
+* Success
+
+---
+
+### 15.1 Organization Secrets
+
+```text id="ci2"
+SONARQUBE_TOKEN
+SONARQUBE_URL
+SNYK_TOKEN
+DOCKERHUB_USERNAME
+DOCKERHUB_TOKEN
+MANIFEST_REPO_PAT
+SMTP_USERNAME
+SMTP_PASSWORD
+ALERT_EMAIL
+```
+
+---
+
+### 15.2 Environment Setup
+
+Create environment: `Prod`
+
+* Required reviewers
+* Approval required before deploy
+
+---
+
+### 15.3 Template Repo
+
+```bash id="ci3"
+cd template-ci
+ls .github/workflows/
+```
+
+Expected templates:
+
+```text id="ci4"
+template-sonarqube.yml
+template-build-snyk.yml
+template-docker.yml
+template-approval-gate.yml
+template-cd.yml
+```
+
+---
+
+### 15.4 Service Config Mapping
+
+```text id="ci5"
+auth       → values_key: auth
+user       → values_key: user
+doctor     → values_key: doctor
+appointment→ values_key: appointment
+```
+
+---
+
+### 15.5 Versioning Strategy
+
+```text id="ci6"
+feature:   → minor bump
+breaking:  → major bump
+default:   → patch bump
+```
+
+---
+
+### 15.6 Docker Tags
+
+```text id="ci7"
+v1.0.3
+v1.0.3-<sha>
+latest
+```
+
+---
+
+### 15.7 Security Layers
+
+```text id="ci8"
+SonarQube → blocks pipeline
+Snyk      → advisory
+Trivy     → advisory
+```
+
+---
+
+### 15.8 Trigger Pipeline
+
+```bash id="ci9"
+git commit -m "feat: trigger CI"
+git push origin main
+```
+
+---
+
+

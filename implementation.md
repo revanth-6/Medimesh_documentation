@@ -299,22 +299,25 @@ Flannel creates an overlay network that allows pods on different nodes to reach 
 
 ---
 
-### 4.1 Install Flannel
+### 4.1 Install Weave Net
 
 ```bash
+# Apply Weave Net manifest
 kubectl apply -f \
-  https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml
+  https://github.com/weaveworks/weave/releases/download/v2.8.1/weave-daemonset-k8s.yaml
 
-# Wait for Flannel pods to start
-kubectl get pods -n kube-flannel -w
+# Watch Weave pods start on all nodes
+kubectl get pods -n kube-system -l name=weave-net -w
 ```
+
+
 
 ---
 
 ### 4.2 Verify Nodes are Ready
 
 ```bash
-# Wait 1-2 minutes after Flannel installation
+# Wait 1-2 minutes after installation
 kubectl get nodes
 ```
 

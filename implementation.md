@@ -243,3 +243,206 @@ sudo kubeadm join <master-ip>:6443 \
 ```bash
 kubectl get nodes
 ```
+
+---
+
+## 4. CNI Plugin — Flannel
+
+### Why CNI is needed
+
+Without a CNI (Container Network Interface) plugin,
+pods cannot communicate with each other across nodes.
+
+Flannel creates an overlay network that allows pods
+on different nodes to reach each other.
+
+---
+
+### 4.1 Install Flannel
+
+```bash
+kubectl apply -f \
+  https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml
+
+kubectl get pods -n kube-flannel -w
+```
+
+---
+
+### 4.2 Verify Nodes are Ready
+
+```bash
+kubectl get nodes
+```
+
+Expected:
+
+```
+NAME       STATUS   ROLES           AGE
+master     Ready    control-plane   5m
+worker-1   Ready    <none>          4m
+worker-2   Ready    <none>          3m
+```
+
+---
+
+### 4.3 Verify System Pods
+
+```bash
+kubectl get pods -n kube-system
+```
+
+Key pods:
+
+* coredns
+* etcd
+* kube-apiserver
+* kube-controller-manager
+* kube-scheduler
+* kube-proxy
+
+---
+
+## 5. NFS Server Setup
+
+### Why NFS?
+
+MongoDB requires persistent storage that survives pod restarts.
+NFS allows all Kubernetes nodes to mount the same shared directory,
+enabling dynamically provisioned persistent volumes.
+
+---
+
+### 5.1 On the NFS Server Node
+
+```bash
+sudo apt update
+sudo apt install -y nfs-kernel-server
+
+sudo mkdir -p /srv/nfs/medimesh
+sudo chown nobody:nogroup /srv/nfs/medimesh
+sudo chmod 777 /srv/nfs/medimesh
+
+echo "/srv/nfs/medimesh *(rw,sync,no_subtree_check,no_root_squash)" \
+  | sudo tee -a /etc/exports
+
+sudo exportfs -rav
+sudo systemctl restart nfs-kernel-server
+sudo systemctl enable nfs-kernel-server
+
+sudo exportfs -v
+```
+
+---
+
+### 5.2 On ALL Kubernetes Nodes
+
+```bash
+sudo apt update
+sudo apt install -y nfs-common
+
+sudo mount -t nfs <nfs-server-ip>:/srv/nfs/medimesh /mnt
+ls /mnt
+sudo umount /mnt
+
+echo "NFS mount test successful!"
+```
+
+---
+
+## 6. Writing Dockerfiles
+
+### Why these Dockerfile patterns?
+
+* Alpine base image → minimal attack surface
+* OS packages upgraded → latest security patches
+* Production-only install → no dev dependencies
+* npm cache cleaned → smaller image size
+* Multi-stage builds → optimized final image
+
+---
+
+### 6.1 Backend Services Dockerfile Pattern
+
+Each backend service follows:
+
+* `FROM node:20-alpine`
+* `apk update && apk upgrade`
+* `npm install --production`
+* Remove unnecessary tools
+* Expose service port
+* Start with `node server.js`
+
+---
+
+### Service Port Mapping
+
+```
+medimesh-auth        → 5001
+medimesh-user        → 5002
+medimesh-doctor      → 5003
+medimesh-appointment → 5004
+medimesh-vital       → 5005
+medimesh-pharmacy    → 5006
+medimesh-ambulance   → 5007
+medimesh-complaint   → 5008
+medimesh-forum       → 5009
+medimesh-bff         → 5010
+```
+
+---
+
+### 6.2 Frontend Dockerfile (Multi-Stage)
+
+Two stages:
+
+Stage 1:
+
+* node:20-alpine
+* installs dependencies
+* builds React app
+
+Stage 2:
+
+* nginx:alpine
+* serves static build
+
+Final image contains:
+
+* NO Node.js
+* ONLY Nginx + static files
+
+---
+
+### 6.3 Build and Test Locally
+
+```bash
+cd medimesh-auth
+
+docker build -t medimesh-auth:test .
+
+docker run -d \
+  --name auth-test \
+  -p 5001:5001 \
+  -e MONGO_URI="mongodb://localhost:27017/test" \
+  -e JWT_SECRET="testsecret" \
+  -e PORT="5001" \
+  medimesh-auth:test
+
+docker ps
+
+curl http://localhost:5001/health
+
+docker logs auth-test
+
+docker stop auth-test && docker rm auth-test
+
+docker tag medimesh-auth:test \
+  bharath44623/medimesh_medimesh-auth:v1.0.0
+
+docker login -u bharath44623
+docker push bharath44623/medimesh_medimesh-auth:v1.0.0
+```
+
+---
+

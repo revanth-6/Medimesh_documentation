@@ -2,7 +2,7 @@
 
 ## From Zero to Production: Full DevOps Implementation Guide
 
-**Project:** MediMesh — Hospital Management Microservices Platform  
+**Project:** MediMesh — Hospital Management Microservices Platform <br>
 **Organization:** Medimesh-grp3  
 **Stack:** Node.js · Docker · Kubernetes · Helm · ArgoCD · GitHub Actions · Prometheus · Grafana  
 **Document:** Complete Technical Implementation Guide  
